@@ -1,0 +1,11 @@
+services:
+  ddns:
+    container_name: hetzner-ddns
+    build: .
+    image: hetzner-ddns:latest
+    env_file:
+      - .env
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    restart: unless-stopped
+
