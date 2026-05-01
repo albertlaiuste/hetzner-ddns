@@ -6,53 +6,47 @@ log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
 }
 
-# Fetch current IP address
 IP=$(curl -s http://checkip.amazonaws.com/)
 
-# Validate IP address
 if [[ ! $IP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
   log "Invalid IP address: $IP"
   exit 1
 fi
 
-# Get current Hetzner record value
-RECORD=$(curl -s "https://dns.hetzner.com/api/v1/records/$HETZNER_RECORD_ID" -H "Auth-API-Token: $HETZNER_ACCESS_KEY")
-CURRENT_IP=$(echo "$RECORD" | jq -r .record.value)
+TYPE="${HETZNER_RECORD_TYPE:-A}"
+TTL="${HETZNER_TTL:-300}"
+RRSET_URL="https://api.hetzner.cloud/v1/zones/${HETZNER_ZONE}/rrsets/${HETZNER_RECORD_NAME}/${TYPE}"
+AUTH_HEADER="Authorization: Bearer ${HETZNER_API_TOKEN}"
 
+RRSET=$(curl -fsS "$RRSET_URL" -H "$AUTH_HEADER")
+if [ -z "$RRSET" ]; then
+  log "Failed to fetch RRset from $RRSET_URL"
+  exit 1
+fi
+
+CURRENT_IP=$(echo "$RRSET" | jq -r '.rrset.records[0].value')
 log "Current IP from Hetzner: $CURRENT_IP"
 
-# Check if IP is different from Hetzner
 if [ "$IP" == "$CURRENT_IP" ]; then
   log "IP has not changed, exiting."
   exit 0
 fi
 
-log "IP has changed, updating records."
+log "IP has changed, updating record."
 
-ZONE_ID=$(echo "$RECORD" | jq -r .record.zone_id)
-TYPE=$(echo "$RECORD" | jq -r .record.type)
-NAME=$(echo "$RECORD" | jq -r .record.name)
-TTL=$(echo "$RECORD" | jq -r .record.ttl)
-UPDATE_RECORD_PAYLOAD=$(cat << EOF
-{
-  "zone_id": "$ZONE_ID",
-  "type": "$TYPE",
-  "name": "$NAME",
-  "value": "$IP",
-  "ttl": $TTL
-}
-EOF
-)
+PAYLOAD=$(jq -nc \
+  --arg ip "$IP" \
+  --argjson ttl "$TTL" \
+  '{ttl: $ttl, records: [{value: $ip}]}')
 
-# Update record
-HTTP_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X "PUT" "https://dns.hetzner.com/api/v1/records/$HETZNER_RECORD_ID" \
+HTTP_RESPONSE=$(curl -s -o /tmp/hetzner-resp -w "%{http_code}" -X PUT "$RRSET_URL" \
      -H "Content-Type: application/json" \
-     -H "Auth-API-Token: $HETZNER_ACCESS_KEY" \
-     -d "$UPDATE_RECORD_PAYLOAD")
+     -H "$AUTH_HEADER" \
+     -d "$PAYLOAD")
 
 if [ "$HTTP_RESPONSE" -eq 200 ]; then
-  echo "DNS record updated successfully."
+  log "DNS record updated successfully to $IP."
 else
-  echo "Failed to update DNS record. HTTP Status: $HTTP_RESPONSE"
+  log "Failed to update DNS record. HTTP Status: $HTTP_RESPONSE. Response: $(cat /tmp/hetzner-resp)"
   exit 1
 fi
